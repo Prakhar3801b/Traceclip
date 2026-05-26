@@ -42,6 +42,8 @@ class CodeAnalyzer(ast.NodeVisitor):
         self.referenced_names: Set[str] = set()
         # Reference line numbers for each name: name -> list of lines where it was referenced
         self.name_reference_lines: Dict[str, List[int]] = {}
+        # Tracks exported names in __all__
+        self.exported_names: Set[str] = set()
 
     def add_name_reference(self, name: str, line: int):
         self.referenced_names.add(name)
@@ -163,7 +165,18 @@ class CodeAnalyzer(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign):
         self.check_placeholder_assignment(node)
+        self.check_all_export(node)
         self.generic_visit(node)
+
+    def check_all_export(self, node: ast.Assign):
+        for t in node.targets:
+            if isinstance(t, ast.Name) and t.id == "__all__":
+                if isinstance(node.value, (ast.List, ast.Tuple, ast.Set)):
+                    for elt in node.value.elts:
+                        if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                            self.exported_names.add(elt.value)
+                        elif isinstance(elt, ast.Str):
+                            self.exported_names.add(elt.s)
 
     def visit_AnnAssign(self, node: ast.AnnAssign):
         self.check_placeholder_assignment(node)
@@ -250,18 +263,7 @@ class CodeAnalyzer(ast.NodeVisitor):
         # Let's check which bound names have 0 references in the loads.
         for bound_name, (line, col, node, alias) in self.imports.items():
             if bound_name not in self.name_loads:
-                # Check if it is inside __all__
-                is_in_all = False
-                for n in ast.walk(ast.parse(self.source_code)):
-                    if isinstance(n, ast.Assign):
-                        for t in n.targets:
-                            if isinstance(t, ast.Name) and t.id == "__all__":
-                                if isinstance(n.value, (ast.List, ast.Tuple, ast.Set)):
-                                    for elt in n.value.elts:
-                                        if isinstance(elt, ast.Constant) and elt.value == bound_name:
-                                            is_in_all = True
-                
-                if not is_in_all:
+                if bound_name not in self.exported_names:
                     name_desc = alias.name
                     if alias.asname:
                         name_desc = f"{alias.name} as {alias.asname}"
